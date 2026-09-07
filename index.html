@@ -123,6 +123,7 @@
   .list{list-style:none;margin:14px 0 0;padding:0}
   .bk{display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--rule)}
   .spine{flex:0 0 4px;border-radius:2px;background:var(--board-3);align-self:stretch}
+  .bk[data-s=reading] .spine{background:var(--paper)}
   .bk[data-s=read] .spine{background:var(--gold)}
   .bk[data-s=toread] .spine{background:var(--verdigris)}
   .bk[data-s=donate] .spine{background:var(--plum)}
@@ -148,6 +149,7 @@
   .card .g{color:#7C8A8A;font-size:12px;margin-top:8px}
   .stack{display:grid;gap:9px;margin-top:14px}
   .big{padding:17px;border-radius:12px;font-weight:600;text-align:center;color:#1B2224}
+  .big.reading{background:var(--paper)}
   .big.read{background:var(--gold)}
   .big.toread{background:var(--verdigris)}
   .big.donate{background:var(--plum)}
@@ -179,7 +181,7 @@
 
 <header class="top">
   <div class="mark">Shel<span>f</span></div>
-  <div class="tally" id="tally">No books yet</div>
+  <div class="tally"><span id="tally">No books yet</span><br><span id="sync"></span></div>
 </header>
 
 <main>
@@ -237,7 +239,16 @@
         <button class="btn" id="impBtn">Import</button>
       </div>
       <input type="file" id="impFile" accept=".json,application/json" hidden>
-      <p class="hint">Everything is stored on this device only. Export before you switch phones, and keep a copy for when you move this into your own app.</p>
+      <p class="hint">A JSON export is your backup. Keep one for when you move this into your own app.</p>
+
+      <h2 style="margin-top:22px">Cloud sync</h2>
+      <div class="field" style="margin-bottom:8px"><input type="text" id="cfgUrl" placeholder="Project URL" autocapitalize="off" autocorrect="off"></div>
+      <div class="field" style="margin-bottom:8px"><input type="text" id="cfgKey" placeholder="API key (anon or publishable)" autocapitalize="off" autocorrect="off"></div>
+      <div class="row-btns">
+        <button class="btn primary" id="cfgSave">Connect</button>
+        <button class="btn" id="cfgPull">Pull from cloud</button>
+      </div>
+      <p class="hint">Paste these once per device. Your books then live in the database, and this device keeps a copy so the app still opens without signal.</p>
     </div>
   </section>
 
@@ -264,6 +275,38 @@
 
 <script src="zxing.min.js"></script>
 <script>
+/* ------------------------------------------------------------------ cloud */
+const Cloud = {
+  cfg(){ try{ return JSON.parse(localStorage.getItem('shelf.cloud')) || null }catch(e){ return null } },
+  save(c){ localStorage.setItem('shelf.cloud', JSON.stringify(c)) },
+  head(c){ return { apikey:c.key, Authorization:'Bearer '+c.key, 'Content-Type':'application/json' } },
+  row(b){ return { id:b.id, isbn:b.isbn||'', title:b.title||'', author:b.author||'',
+    genre:b.genre||'', year:b.year||'', publisher:b.publisher||'', cover:b.cover||'',
+    status:b.status||'unsorted', place:b.place||'', added_at:b.addedAt||Date.now() } },
+  book(r){ return { id:r.id, isbn:r.isbn, title:r.title, author:r.author, genre:r.genre,
+    year:r.year, publisher:r.publisher, cover:r.cover, status:r.status, place:r.place,
+    addedAt:Number(r.added_at) } },
+  async pull(c){
+    const r = await fetch(`${c.url}/rest/v1/books?select=*`, { headers:this.head(c) });
+    if (!r.ok) throw new Error(await r.text());
+    return (await r.json()).map(this.book);
+  },
+  async push(c, list){
+    if (!list.length) return;
+    const r = await fetch(`${c.url}/rest/v1/books`, {
+      method:'POST',
+      headers:{ ...this.head(c), Prefer:'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(list.map(this.row)),
+    });
+    if (!r.ok) throw new Error(await r.text());
+  },
+  async drop(c, id){
+    await fetch(`${c.url}/rest/v1/books?id=eq.${id}`, { method:'DELETE', headers:this.head(c) });
+  },
+};
+
+function setSync(msg){ document.getElementById('sync').textContent = msg }
+
 /* ------------------------------------------------------------------ store */
 const KEY = 'shelf.books.v1';
 const Store = {
@@ -271,10 +314,36 @@ const Store = {
   save(list){ localStorage.setItem(KEY, JSON.stringify(list)) },
 };
 let books = Store.all();
-const commit = () => { Store.save(books); paintTally(); };
+
+let pushTimer = null;
+function commit(){
+  Store.save(books);
+  paintTally();
+  const c = Cloud.cfg();
+  if (!c) return;
+  clearTimeout(pushTimer);
+  setSync('Saving\u2026');
+  pushTimer = setTimeout(() => {
+    Cloud.push(c, books).then(() => setSync('Saved to the cloud'))
+                        .catch(() => setSync('Saved here \u2014 cloud unreachable'));
+  }, 700);
+}
+
+async function pullNow(){
+  const c = Cloud.cfg(); if (!c) return;
+  setSync('Loading\u2026');
+  try{
+    books = (await Cloud.pull(c)).sort((a,b) => (b.addedAt||0) - (a.addedAt||0));
+    Store.save(books);
+    paintTally(); paintSeg();
+    if (current() === 'v-lib'){ paintChips(); paintPchips(); paintList() }
+    if (current() === 'v-tri') paintTriage();
+    setSync('Saved to the cloud');
+  }catch(e){ setSync('Cloud unreachable \u2014 showing this device'); console.warn(e) }
+}
 
 const STATUS = {
-  unsorted:{label:'Unsorted'}, toread:{label:'To read'},
+  unsorted:{label:'Unsorted'}, toread:{label:'To read'}, reading:{label:'Reading now'},
   read:{label:'Read'},         donate:{label:'Donate'},
 };
 const PLACE = { shelf:'On the shelf', box:'In a box' };
@@ -369,14 +438,14 @@ async function addByIsbn(isbn, quiet){
   }
   const book = { id:crypto.randomUUID(), isbn, title:'', author:'', genre:'', year:'',
                  publisher:'', cover:'', status:'unsorted', place, addedAt:Date.now() };
-  books.unshift(book); commit(); session++; $('count').textContent = session;
+  books.unshift(book); commit(book); session++; $('count').textContent = session;
   if (!quiet) feedback(true);
   showLast(book, 'Fetching details…');
 
   const meta = await lookup(isbn);
   if (meta) Object.assign(book, meta);
   else book.title = `Unknown book (${isbn})`;
-  commit();
+  commit(book);
   showLast(book, meta ? `Added from ${meta.source}` : 'Added — no record found, edit it later', !meta);
   if (current() === 'v-lib') paintList();
   if (current() === 'v-tri') paintTriage();
@@ -443,7 +512,7 @@ $('handBtn').onclick = () => {
   const [t, a] = v.split(/\s+[-—–]\s+/);
   books.unshift({ id:crypto.randomUUID(), isbn:'', title:t.trim(), author:(a||'').trim(),
                   genre:'', year:'', publisher:'', cover:'', status:'unsorted', place, addedAt:Date.now() });
-  commit(); session++; $('count').textContent = session;
+  commit(books[0]); session++; $('count').textContent = session;
   $('handBox').value = '';
   showLast(books[0], 'Added by hand');
 };
@@ -469,7 +538,7 @@ function paintPchips(){
     pfilter = c.dataset.p; paintPchips(); paintList();
   });
 }
-const FILTERS = [['all','Everything'],['unsorted','Unsorted'],['toread','To read'],['read','Read'],['donate','Donate']];
+const FILTERS = [['all','Everything'],['reading','Reading now'],['unsorted','Unsorted'],['toread','To read'],['read','Read'],['donate','Donate']];
 
 function paintChips(){
   $('chips').innerHTML = FILTERS.map(([k,l]) => {
@@ -506,7 +575,7 @@ function paintList(){
         ${b.author ? `<div class="a">${esc(b.author)}</div>` : ''}
         <div class="g">${esc([b.genre, b.year, PLACE[b.place] || 'Unfiled'].filter(Boolean).join(' · '))}</div>
         <div class="acts">
-          ${['toread','read','donate','unsorted'].map(s =>
+          ${['reading','toread','read','donate','unsorted'].map(s =>
             `<button class="mini" data-set="${s}" data-on="${b.status===s}">${STATUS[s].label}</button>`).join('')}
           ${['shelf','box'].map(p =>
             `<button class="mini" data-place="${p}" data-on="${b.place===p}">${PLACE[p]}</button>`).join('')}
@@ -521,17 +590,21 @@ $('list').onclick = e => {
   const li = e.target.closest('.bk'); if (!li) return;
   const b = books.find(x => x.id === li.dataset.id);
   const t = e.target;
-  if (t.dataset.set){ b.status = t.dataset.set; commit(); paintChips(); paintList(); return; }
+  if (t.dataset.set){ b.status = t.dataset.set; commit(b); paintChips(); paintList(); return; }
   if (t.dataset.place){
     b.place = b.place === t.dataset.place ? '' : t.dataset.place;
-    commit(); paintPchips(); paintList(); paintSeg(); return;
+    commit(b); paintPchips(); paintList(); paintSeg(); return;
   }
-  if (t.dataset.del){ books = books.filter(x => x.id !== b.id); commit(); paintChips(); paintPchips(); paintList(); return; }
+  if (t.dataset.del){
+    books = books.filter(x => x.id !== b.id);
+    const c = Cloud.cfg(); if (c) Cloud.drop(c, b.id).catch(()=>{});
+    commit(); paintChips(); paintPchips(); paintList(); return;
+  }
   if (t.dataset.edit){
     const title = prompt('Title', b.title); if (title === null) return;
     const author = prompt('Author', b.author); if (author === null) return;
     const genre = prompt('Genre', b.genre); if (genre === null) return;
-    Object.assign(b, {title, author, genre}); commit(); paintList(); return;
+    Object.assign(b, {title, author, genre}); commit(b); paintList(); return;
   }
   li.classList.toggle('open');
 };
@@ -559,6 +632,7 @@ function paintTriage(){
       <button data-tp="box" aria-pressed="${b.place==='box'}">In a box</button>
     </div>
     <div class="stack">
+      <button class="big reading" data-s="reading">Reading now</button>
       <button class="big read" data-s="read">Read it</button>
       <button class="big toread" data-s="toread">To read</button>
       <button class="big donate" data-s="donate">Donate</button>
@@ -567,12 +641,12 @@ function paintTriage(){
     <div class="left">${q.length} left to sort</div>`;
   $('triWrap').querySelectorAll('[data-tp]').forEach(btn => btn.onclick = () => {
     b.place = b.place === btn.dataset.tp ? '' : btn.dataset.tp;
-    commit(); paintTriage();
+    commit(b); paintTriage();
   });
   $('triWrap').querySelectorAll('[data-s]').forEach(btn => btn.onclick = () => {
     if (btn.dataset.s === 'skip'){ books = books.filter(x => x.id !== b.id).concat(b); }
     else b.status = btn.dataset.s;
-    commit(); paintTriage();
+    commit(b); paintTriage();
   });
 }
 
@@ -605,7 +679,7 @@ $('impFile').onchange = async e => {
       if (b.isbn) seen.add(b.isbn);
       added++;
     });
-    commit(); paintChips(); paintPchips(); paintList();
+    commit(books); paintChips(); paintPchips(); paintList();
     alert(`Imported ${added} books.`);
   }catch(err){ alert('That file is not a Shelf export.') }
   e.target.value = '';
@@ -635,6 +709,32 @@ function paintTally(){
 }
 paintTally();
 paintSeg();
+
+/* ------------------------------------------------------------------ cloud ui */
+(() => {
+  const c = Cloud.cfg();
+  if (c){ $('cfgUrl').value = c.url; $('cfgKey').value = c.key; setSync('Saved to the cloud'); pullNow(); }
+  else setSync('On this device only');
+})();
+
+$('cfgSave').onclick = async () => {
+  const url = $('cfgUrl').value.trim().replace(/\/+$/,'');
+  const key = $('cfgKey').value.trim();
+  if (!/^https:\/\/.+/.test(url) || key.length < 20){
+    alert('Paste the project URL (starts with https://) and the anon key.'); return;
+  }
+  Cloud.save({ url, key });
+  setSync('Connecting\u2026');
+  try{
+    await Cloud.push({ url, key }, books);   // send what is already on this device
+    await pullNow();                          // then take the cloud copy as the truth
+    alert('Connected. Your books are in the cloud.');
+  }catch(e){
+    setSync('Could not connect');
+    alert('That did not work. Check the URL and key, and that you ran the table setup.');
+  }
+};
+$('cfgPull').onclick = pullNow;
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
 </script>
