@@ -155,6 +155,15 @@
 
   .tools{margin-top:26px;padding-top:16px;border-top:1px solid var(--rule)}
 
+  /* ---------- where it lives ---------- */
+  .seg{
+    display:flex;gap:6px;padding:4px;border-radius:13px;background:var(--board-2);
+    border:1px solid var(--rule);margin-bottom:12px;
+  }
+  .seg button{flex:1;padding:11px 8px;border-radius:9px;font-size:14px;color:var(--muted)}
+  .seg button[aria-pressed=true]{background:var(--paper);color:#1B2224;font-weight:600}
+  .seg-note{font-size:12px;color:#7C8A8A;margin:-6px 0 12px;padding:0 4px}
+
   /* ---------- nav ---------- */
   nav{
     display:flex;border-top:1px solid var(--rule);background:var(--board);
@@ -176,6 +185,12 @@
 <main>
   <!-- ============ SCAN ============ -->
   <section class="view on" id="v-scan">
+    <div class="seg" id="placeSeg" role="group" aria-label="Where these books live">
+      <button data-p="shelf">On the shelf</button>
+      <button data-p="box">In a box</button>
+    </div>
+    <div class="seg-note" id="placeNote"></div>
+
     <div class="frame idle" id="frame">
       <video id="cam" playsinline muted></video>
       <div class="reticle"></div><div class="band"></div>
@@ -212,6 +227,7 @@
   <section class="view" id="v-lib">
     <input type="search" id="q" placeholder="Search title, author, genre">
     <div class="chips" id="chips"></div>
+    <div class="chips" id="pchips"></div>
     <ul class="list" id="list"></ul>
     <div class="tools">
       <h2>Your data</h2>
@@ -261,6 +277,17 @@ const STATUS = {
   unsorted:{label:'Unsorted'}, toread:{label:'To read'},
   read:{label:'Read'},         donate:{label:'Donate'},
 };
+const PLACE = { shelf:'On the shelf', box:'In a box' };
+
+/* where the books you are scanning right now physically live */
+let place = localStorage.getItem('shelf.place') || 'shelf';
+function paintSeg(){
+  document.querySelectorAll('#placeSeg button').forEach(b =>
+    b.setAttribute('aria-pressed', String(b.dataset.p === place)));
+  const n = books.filter(b => b.place === place).length;
+  document.getElementById('placeNote').textContent =
+    `Everything you scan now is tagged ${PLACE[place].toLowerCase()}. ${n} there so far.`;
+}
 
 /* ------------------------------------------------------------------ isbn */
 function cleanIsbn(raw){
@@ -341,7 +368,7 @@ async function addByIsbn(isbn, quiet){
     return;
   }
   const book = { id:crypto.randomUUID(), isbn, title:'', author:'', genre:'', year:'',
-                 publisher:'', cover:'', status:'unsorted', addedAt:Date.now() };
+                 publisher:'', cover:'', status:'unsorted', place, addedAt:Date.now() };
   books.unshift(book); commit(); session++; $('count').textContent = session;
   if (!quiet) feedback(true);
   showLast(book, 'Fetching details…');
@@ -415,14 +442,33 @@ $('handBtn').onclick = () => {
   if (!v) return;
   const [t, a] = v.split(/\s+[-—–]\s+/);
   books.unshift({ id:crypto.randomUUID(), isbn:'', title:t.trim(), author:(a||'').trim(),
-                  genre:'', year:'', publisher:'', cover:'', status:'unsorted', addedAt:Date.now() });
+                  genre:'', year:'', publisher:'', cover:'', status:'unsorted', place, addedAt:Date.now() });
   commit(); session++; $('count').textContent = session;
   $('handBox').value = '';
   showLast(books[0], 'Added by hand');
 };
 
+document.querySelectorAll('#placeSeg button').forEach(b => b.onclick = () => {
+  place = b.dataset.p;
+  localStorage.setItem('shelf.place', place);
+  paintSeg();
+});
+
 /* ------------------------------------------------------------------ library */
-let filter = 'all', query = '';
+let filter = 'all', pfilter = 'any', query = '';
+const PFILTERS = [['any','Anywhere'],['shelf','On the shelf'],['box','In a box'],['none','Unfiled']];
+
+function paintPchips(){
+  $('pchips').innerHTML = PFILTERS.map(([k,l]) => {
+    const n = k === 'any' ? books.length
+            : k === 'none' ? books.filter(b => !b.place).length
+            : books.filter(b => b.place === k).length;
+    return `<button class="chip" data-p="${k}" aria-pressed="${pfilter===k}">${l} ${n}</button>`;
+  }).join('');
+  $('pchips').querySelectorAll('.chip').forEach(c => c.onclick = () => {
+    pfilter = c.dataset.p; paintPchips(); paintList();
+  });
+}
 const FILTERS = [['all','Everything'],['unsorted','Unsorted'],['toread','To read'],['read','Read'],['donate','Donate']];
 
 function paintChips(){
@@ -439,6 +485,7 @@ function visible(){
   const q = query.toLowerCase();
   return books.filter(b =>
     (filter === 'all' || b.status === filter) &&
+    (pfilter === 'any' || (pfilter === 'none' ? !b.place : b.place === pfilter)) &&
     (!q || `${b.title} ${b.author} ${b.genre} ${b.isbn}`.toLowerCase().includes(q))
   );
 }
@@ -457,10 +504,12 @@ function paintList(){
       <div class="body">
         <div class="t">${esc(b.title || b.isbn || 'Untitled')}</div>
         ${b.author ? `<div class="a">${esc(b.author)}</div>` : ''}
-        ${b.genre || b.year ? `<div class="g">${esc([b.genre, b.year].filter(Boolean).join(' · '))}</div>` : ''}
+        <div class="g">${esc([b.genre, b.year, PLACE[b.place] || 'Unfiled'].filter(Boolean).join(' · '))}</div>
         <div class="acts">
           ${['toread','read','donate','unsorted'].map(s =>
             `<button class="mini" data-set="${s}" data-on="${b.status===s}">${STATUS[s].label}</button>`).join('')}
+          ${['shelf','box'].map(p =>
+            `<button class="mini" data-place="${p}" data-on="${b.place===p}">${PLACE[p]}</button>`).join('')}
           <button class="mini" data-edit="1">Edit</button>
           <button class="mini danger" data-del="1">Remove</button>
         </div>
@@ -473,7 +522,11 @@ $('list').onclick = e => {
   const b = books.find(x => x.id === li.dataset.id);
   const t = e.target;
   if (t.dataset.set){ b.status = t.dataset.set; commit(); paintChips(); paintList(); return; }
-  if (t.dataset.del){ books = books.filter(x => x.id !== b.id); commit(); paintChips(); paintList(); return; }
+  if (t.dataset.place){
+    b.place = b.place === t.dataset.place ? '' : t.dataset.place;
+    commit(); paintPchips(); paintList(); paintSeg(); return;
+  }
+  if (t.dataset.del){ books = books.filter(x => x.id !== b.id); commit(); paintChips(); paintPchips(); paintList(); return; }
   if (t.dataset.edit){
     const title = prompt('Title', b.title); if (title === null) return;
     const author = prompt('Author', b.author); if (author === null) return;
@@ -498,8 +551,12 @@ function paintTriage(){
       <div>
         <div class="t">${esc(b.title || b.isbn || 'Untitled')}</div>
         ${b.author ? `<div class="a">${esc(b.author)}</div>` : ''}
-        ${b.genre ? `<div class="g">${esc(b.genre)}</div>` : ''}
+        <div class="g">${esc([b.genre, PLACE[b.place] || 'Unfiled'].filter(Boolean).join(' · '))}</div>
       </div>
+    </div>
+    <div class="seg" style="margin-top:12px">
+      <button data-tp="shelf" aria-pressed="${b.place==='shelf'}">On the shelf</button>
+      <button data-tp="box" aria-pressed="${b.place==='box'}">In a box</button>
     </div>
     <div class="stack">
       <button class="big read" data-s="read">Read it</button>
@@ -508,6 +565,10 @@ function paintTriage(){
       <button class="btn" data-s="skip">Skip for now</button>
     </div>
     <div class="left">${q.length} left to sort</div>`;
+  $('triWrap').querySelectorAll('[data-tp]').forEach(btn => btn.onclick = () => {
+    b.place = b.place === btn.dataset.tp ? '' : btn.dataset.tp;
+    commit(); paintTriage();
+  });
   $('triWrap').querySelectorAll('[data-s]').forEach(btn => btn.onclick = () => {
     if (btn.dataset.s === 'skip'){ books = books.filter(x => x.id !== b.id).concat(b); }
     else b.status = btn.dataset.s;
@@ -524,7 +585,7 @@ function download(name, text, type){
 const stamp = () => new Date().toISOString().slice(0,10);
 $('expJson').onclick = () => download(`shelf-${stamp()}.json`, JSON.stringify(books, null, 2), 'application/json');
 $('expCsv').onclick = () => {
-  const cols = ['isbn','title','author','genre','year','publisher','status','addedAt'];
+  const cols = ['isbn','title','author','genre','year','publisher','status','place','addedAt'];
   const cell = v => `"${String(v ?? '').replace(/"/g,'""')}"`;
   download(`shelf-${stamp()}.csv`,
     [cols.join(','), ...books.map(b => cols.map(c => cell(b[c])).join(','))].join('\n'),
@@ -544,7 +605,7 @@ $('impFile').onchange = async e => {
       if (b.isbn) seen.add(b.isbn);
       added++;
     });
-    commit(); paintChips(); paintList();
+    commit(); paintChips(); paintPchips(); paintList();
     alert(`Imported ${added} books.`);
   }catch(err){ alert('That file is not a Shelf export.') }
   e.target.value = '';
@@ -560,8 +621,9 @@ function go(v){
     if (sec === v) $(btn).setAttribute('aria-current','page');
   });
   if (v !== 'v-scan') stopCam();
-  if (v === 'v-lib'){ paintChips(); paintList(); }
+  if (v === 'v-lib'){ paintChips(); paintPchips(); paintList(); }
   if (v === 'v-tri') paintTriage();
+  if (v === 'v-scan') paintSeg();
   document.querySelector('main').scrollTop = 0;
 }
 Object.entries(views).forEach(([sec, btn]) => $(btn).onclick = () => go(sec));
@@ -572,6 +634,7 @@ function paintTally(){
   $('tally').textContent = n ? `${n} books · ${u} unsorted` : 'No books yet';
 }
 paintTally();
+paintSeg();
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
 </script>
