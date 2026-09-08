@@ -29,7 +29,8 @@
     --safe-b:env(safe-area-inset-bottom,0px);
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-  html,body{margin:0;height:100vh;height:100dvh;overflow:hidden}
+  html{height:100%}
+  body{margin:0;height:100dvh;overflow:hidden}
   body{
     background:var(--board);color:var(--paper);font-family:var(--sans);
     font-size:16px;line-height:1.45;
@@ -95,6 +96,7 @@
     display:flex;gap:12px;padding:12px;border-radius:12px;background:var(--board-2);
     border:1px solid var(--rule);margin-top:10px;align-items:flex-start;
   }
+  .last[hidden]{display:none}
   .last img{width:44px;height:66px;object-fit:cover;border-radius:3px;background:var(--board-3);flex:0 0 auto}
   .last .t{font-family:var(--serif);font-size:17px;line-height:1.25}
   .last .a{font-size:13px;color:var(--muted);margin-top:2px}
@@ -753,6 +755,12 @@ $('cfgSave').onclick = async () => {
   }
 };
 $('cfgPull').onclick = pullNow;
+
+/* iOS standalone reports viewport units unreliably; measure the window instead */
+const fitHeight = () => { document.body.style.height = window.innerHeight + 'px' };
+fitHeight();
+['resize','orientationchange','pageshow'].forEach(e => addEventListener(e, fitHeight));
+if (window.visualViewport) visualViewport.addEventListener('resize', fitHeight);
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
 </script>

@@ -1,4 +1,4 @@
-const CACHE = 'shelf-v6';
+const CACHE = 'shelf-v7';
 const ASSETS = ['./', 'index.html', 'zxing.min.js', 'manifest.webmanifest'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
