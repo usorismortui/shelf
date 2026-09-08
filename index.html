@@ -29,7 +29,7 @@
     --safe-b:env(safe-area-inset-bottom,0px);
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-  html,body{margin:0;height:100%}
+  html,body{margin:0;height:100vh;height:100dvh;overflow:hidden}
   body{
     background:var(--board);color:var(--paper);font-family:var(--sans);
     font-size:16px;line-height:1.45;
@@ -49,7 +49,7 @@
   .tally{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
 
   /* ---------- views ---------- */
-  main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}
+  main{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch}
   .view{display:none;padding:16px 16px calc(28px + var(--safe-b))}
   .view.on{display:block}
 
@@ -136,6 +136,12 @@
   .mini{padding:8px 12px;border-radius:9px;background:var(--board-2);border:1px solid var(--rule);font-size:13px}
   .mini[data-on=true]{background:var(--paper);color:#1B2224;border-color:transparent;font-weight:600}
   .mini.danger{color:var(--plum)}
+  .dates{display:flex;gap:8px;width:100%;margin-top:2px}
+  .dt{flex:1;font-size:12px;color:var(--muted);display:grid;gap:4px}
+  .dt input{
+    width:100%;padding:8px 10px;border-radius:9px;background:var(--board-2);
+    border:1px solid var(--rule);color:var(--paper);font-size:13px;
+  }
   .empty{margin:40px 0;text-align:center;color:var(--muted);font-size:14px}
 
   /* ---------- triage ---------- */
@@ -169,7 +175,7 @@
   /* ---------- nav ---------- */
   nav{
     display:flex;border-top:1px solid var(--rule);background:var(--board);
-    padding-bottom:var(--safe-b);
+    padding-bottom:var(--safe-b);flex:0 0 auto;
   }
   nav button{flex:1;padding:12px 4px 11px;font-size:12px;color:var(--muted);display:grid;gap:4px;justify-items:center}
   nav button svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.6}
@@ -187,12 +193,6 @@
 <main>
   <!-- ============ SCAN ============ -->
   <section class="view on" id="v-scan">
-    <div class="seg" id="placeSeg" role="group" aria-label="Where these books live">
-      <button data-p="shelf">On the shelf</button>
-      <button data-p="box">In a box</button>
-    </div>
-    <div class="seg-note" id="placeNote"></div>
-
     <div class="frame idle" id="frame">
       <video id="cam" playsinline muted></video>
       <div class="reticle"></div><div class="band"></div>
@@ -282,10 +282,11 @@ const Cloud = {
   head(c){ return { apikey:c.key, Authorization:'Bearer '+c.key, 'Content-Type':'application/json' } },
   row(b){ return { id:b.id, isbn:b.isbn||'', title:b.title||'', author:b.author||'',
     genre:b.genre||'', year:b.year||'', publisher:b.publisher||'', cover:b.cover||'',
-    status:b.status||'unsorted', place:b.place||'', added_at:b.addedAt||Date.now() } },
+    status:b.status||'unsorted', place:b.place||'', started:b.started||'', finished:b.finished||'',
+    added_at:b.addedAt||Date.now() } },
   book(r){ return { id:r.id, isbn:r.isbn, title:r.title, author:r.author, genre:r.genre,
     year:r.year, publisher:r.publisher, cover:r.cover, status:r.status, place:r.place,
-    addedAt:Number(r.added_at) } },
+    started:r.started||'', finished:r.finished||'', addedAt:Number(r.added_at) } },
   async pull(c){
     const r = await fetch(`${c.url}/rest/v1/books?select=*`, { headers:this.head(c) });
     if (!r.ok) throw new Error(await r.text());
@@ -335,7 +336,7 @@ async function pullNow(){
   try{
     books = (await Cloud.pull(c)).sort((a,b) => (b.addedAt||0) - (a.addedAt||0));
     Store.save(books);
-    paintTally(); paintSeg();
+    paintTally();
     if (current() === 'v-lib'){ paintChips(); paintPchips(); paintList() }
     if (current() === 'v-tri') paintTriage();
     setSync('Saved to the cloud');
@@ -348,15 +349,21 @@ const STATUS = {
 };
 const PLACE = { shelf:'On the shelf', box:'In a box' };
 
-/* where the books you are scanning right now physically live */
-let place = localStorage.getItem('shelf.place') || 'shelf';
-function paintSeg(){
-  document.querySelectorAll('#placeSeg button').forEach(b =>
-    b.setAttribute('aria-pressed', String(b.dataset.p === place)));
-  const n = books.filter(b => b.place === place).length;
-  document.getElementById('placeNote').textContent =
-    `Everything you scan now is tagged ${PLACE[place].toLowerCase()}. ${n} there so far.`;
+const today = () => new Date().toLocaleDateString('en-CA');   // YYYY-MM-DD, local
+const days = (a, b) => Math.max(0, Math.round((new Date(b) - new Date(a)) / 86400000));
+function spell(b){
+  if (b.status === 'reading' && b.started){
+    const d = days(b.started, today());
+    return d === 0 ? 'Started today' : d === 1 ? '1 day in' : `${d} days in`;
+  }
+  if (b.status === 'read' && b.started && b.finished){
+    const d = days(b.started, b.finished);
+    return d <= 1 ? 'Read in a day' : `Read in ${d} days`;
+  }
+  if (b.status === 'read' && b.finished) return `Finished ${b.finished}`;
+  return '';
 }
+
 
 /* ------------------------------------------------------------------ isbn */
 function cleanIsbn(raw){
@@ -437,7 +444,7 @@ async function addByIsbn(isbn, quiet){
     return;
   }
   const book = { id:crypto.randomUUID(), isbn, title:'', author:'', genre:'', year:'',
-                 publisher:'', cover:'', status:'unsorted', place, addedAt:Date.now() };
+                 publisher:'', cover:'', status:'unsorted', place:'', addedAt:Date.now() };
   books.unshift(book); commit(book); session++; $('count').textContent = session;
   if (!quiet) feedback(true);
   showLast(book, 'Fetching details…');
@@ -511,17 +518,11 @@ $('handBtn').onclick = () => {
   if (!v) return;
   const [t, a] = v.split(/\s+[-—–]\s+/);
   books.unshift({ id:crypto.randomUUID(), isbn:'', title:t.trim(), author:(a||'').trim(),
-                  genre:'', year:'', publisher:'', cover:'', status:'unsorted', place, addedAt:Date.now() });
+                  genre:'', year:'', publisher:'', cover:'', status:'unsorted', place:'', addedAt:Date.now() });
   commit(books[0]); session++; $('count').textContent = session;
   $('handBox').value = '';
   showLast(books[0], 'Added by hand');
 };
-
-document.querySelectorAll('#placeSeg button').forEach(b => b.onclick = () => {
-  place = b.dataset.p;
-  localStorage.setItem('shelf.place', place);
-  paintSeg();
-});
 
 /* ------------------------------------------------------------------ library */
 let filter = 'all', pfilter = 'any', query = '';
@@ -573,13 +574,18 @@ function paintList(){
       <div class="body">
         <div class="t">${esc(b.title || b.isbn || 'Untitled')}</div>
         ${b.author ? `<div class="a">${esc(b.author)}</div>` : ''}
-        <div class="g">${esc([b.genre, b.year, PLACE[b.place] || 'Unfiled'].filter(Boolean).join(' · '))}</div>
+        <div class="g">${esc([b.genre, b.year, PLACE[b.place] || 'Unfiled', spell(b)].filter(Boolean).join(' · '))}</div>
         <div class="acts">
           ${['reading','toread','read','donate','unsorted'].map(s =>
             `<button class="mini" data-set="${s}" data-on="${b.status===s}">${STATUS[s].label}</button>`).join('')}
           ${['shelf','box'].map(p =>
             `<button class="mini" data-place="${p}" data-on="${b.place===p}">${PLACE[p]}</button>`).join('')}
           <button class="mini" data-edit="1">Edit</button>
+          ${b.status === 'reading' || b.status === 'read' ? `
+          <div class="dates">
+            <label class="dt">Started<input type="date" data-dt="started" value="${esc(b.started||'')}"></label>
+            <label class="dt">Finished<input type="date" data-dt="finished" value="${esc(b.finished||'')}"></label>
+          </div>` : ''}
           <button class="mini danger" data-del="1">Remove</button>
         </div>
       </div>
@@ -590,10 +596,16 @@ $('list').onclick = e => {
   const li = e.target.closest('.bk'); if (!li) return;
   const b = books.find(x => x.id === li.dataset.id);
   const t = e.target;
-  if (t.dataset.set){ b.status = t.dataset.set; commit(b); paintChips(); paintList(); return; }
+  if (t.dataset.set){
+    b.status = t.dataset.set;
+    if (b.status === 'reading' && !b.started) b.started = today();
+    if (b.status === 'read' && !b.finished) b.finished = today();
+    commit(b); paintChips(); paintList(); return;
+  }
+  if (t.dataset.dt) return;
   if (t.dataset.place){
     b.place = b.place === t.dataset.place ? '' : t.dataset.place;
-    commit(b); paintPchips(); paintList(); paintSeg(); return;
+    commit(b); paintPchips(); paintList(); return;
   }
   if (t.dataset.del){
     books = books.filter(x => x.id !== b.id);
@@ -607,6 +619,14 @@ $('list').onclick = e => {
     Object.assign(b, {title, author, genre}); commit(b); paintList(); return;
   }
   li.classList.toggle('open');
+};
+$('list').onchange = e => {
+  const t = e.target; if (!t.dataset.dt) return;
+  const li = t.closest('.bk'); if (!li) return;
+  const b = books.find(x => x.id === li.dataset.id);
+  b[t.dataset.dt] = t.value;
+  commit(b); paintList();
+  document.querySelector(`.bk[data-id="${b.id}"]`)?.classList.add('open');
 };
 $('q').oninput = e => { query = e.target.value; paintList(); };
 
@@ -659,7 +679,7 @@ function download(name, text, type){
 const stamp = () => new Date().toISOString().slice(0,10);
 $('expJson').onclick = () => download(`shelf-${stamp()}.json`, JSON.stringify(books, null, 2), 'application/json');
 $('expCsv').onclick = () => {
-  const cols = ['isbn','title','author','genre','year','publisher','status','place','addedAt'];
+  const cols = ['isbn','title','author','genre','year','publisher','status','place','started','finished','addedAt'];
   const cell = v => `"${String(v ?? '').replace(/"/g,'""')}"`;
   download(`shelf-${stamp()}.csv`,
     [cols.join(','), ...books.map(b => cols.map(c => cell(b[c])).join(','))].join('\n'),
@@ -697,7 +717,6 @@ function go(v){
   if (v !== 'v-scan') stopCam();
   if (v === 'v-lib'){ paintChips(); paintPchips(); paintList(); }
   if (v === 'v-tri') paintTriage();
-  if (v === 'v-scan') paintSeg();
   document.querySelector('main').scrollTop = 0;
 }
 Object.entries(views).forEach(([sec, btn]) => $(btn).onclick = () => go(sec));
@@ -708,7 +727,6 @@ function paintTally(){
   $('tally').textContent = n ? `${n} books · ${u} unsorted` : 'No books yet';
 }
 paintTally();
-paintSeg();
 
 /* ------------------------------------------------------------------ cloud ui */
 (() => {
